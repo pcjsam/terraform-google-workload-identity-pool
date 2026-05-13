@@ -16,6 +16,39 @@ That works, but every key is:
 
 WIF replaces this with short-lived federated tokens. The workload proves its own identity to GCP using whatever identity its host system already gives it (a GitHub OIDC JWT, the AWS task role's STS identity), and GCP mints a service-account access token good for ~1 hour. No long-lived secret travels with the workload, and identity-aware logs show exactly which upstream principal federated.
 
+## Protocols at a glance
+
+WIF sits at the intersection of three identity-and-access protocols. You don't have to be an expert in any of them, but knowing what each one is for makes the rest of this doc easier to read.
+
+### OAuth 2.0
+
+The umbrella *authorization* framework (RFC 6749). Defines how a client obtains an **access token** scoped to specific resources without ever seeing the user's password or long-lived credentials. OAuth 2.0 says nothing about *who* the client is — it just hands out tokens.
+
+WIF is built on a specific OAuth 2.0 extension called **Token Exchange** (RFC 8693): the client presents one token, and the server hands back another (with potentially different scope, audience, or subject). The federated GCP access tokens you end up with at the end of this flow are plain OAuth 2.0 bearer tokens.
+
+### OpenID Connect (OIDC)
+
+An *identity layer* on top of OAuth 2.0. Adds the concept of an **ID token** — a JWT that asserts *who the caller is*, with standard claims like `sub`, `iss`, `aud`, `exp`. GitHub Actions uses OIDC: when a workflow asks for an identity token, GitHub mints a JWT with claims like `repository`, `ref`, `actor`. GCP can validate that JWT and trust the claims because they're signed by GitHub's well-known key.
+
+If you've ever clicked "Sign in with Google" on a third-party site, that's OIDC under the hood.
+
+### SAML 2.0
+
+A much older (2005-era) XML-based federated-identity protocol, mostly used for enterprise SSO. Same basic idea as OIDC — the identity provider issues a signed assertion about the user — but the format is XML rather than JSON/JWT, and the dance is heavier. GCP WIF *supports* SAML providers, but this module doesn't expose that surface, and most cloud-to-cloud federation today uses OIDC or AWS-style signed requests instead.
+
+You'll typically encounter SAML only when integrating with a legacy enterprise identity provider (Okta SAML, AD FS, etc.).
+
+### How they fit together here
+
+| Protocol | Role in this module |
+|---|---|
+| OAuth 2.0 Token Exchange (RFC 8693) | The wire protocol of the call to `sts.googleapis.com/v1/token`. Used by *both* the GitHub path and the AWS path. |
+| OIDC | What GitHub uses to mint the JWT the GitHub provider verifies. |
+| SAML | Not used by this module. GCP supports it as a provider type, but we don't expose it. |
+| AWS SigV4 over `GetCallerIdentity` | What the AWS path uses *instead* of OIDC. Not a standard identity protocol — it's a GCP convention that leverages AWS's existing request-signing as proof of identity. |
+
+Two paths this module supports: **OIDC** (github → JWT → GCP verifies signature against GitHub's keys) and **AWS signed STS** (aws → SigV4 blob → GCP delegates verification back to AWS). Both end in the same kind of federated OAuth 2.0 access token.
+
 ## The cast
 
 Four entities show up in every flow:
@@ -174,6 +207,86 @@ upstream token --> mapping --> attribute_condition --> principalSet binding --> 
 | `principalSet` binding | Precise gate: does this identity have permission to impersonate *this specific SA*? | `service_accounts` list (one binding per entry) |
 
 A request can fail at any of the three layers. The error messages GCP returns differ, which makes them debuggable — see the table below.
+
+## How GCP knows what to validate
+
+A natural question: how does GCP STS know what kind of credential to expect, and how does it avoid being tricked? The short answer is that the caller explicitly names which provider they're targeting, and the provider's stored configuration determines the validation strategy.
+
+### The wire-level request
+
+Every federation call hits `sts.googleapis.com/v1/token` with three load-bearing fields:
+
+| Field | Role |
+|---|---|
+| `audience` | The full provider resource path (`//iam.googleapis.com/projects/.../providers/<id>`). **This is how GCP looks up which provider to use.** |
+| `subject_token_type` | Wire format: `...token-type:jwt` for OIDC, `...token-type:aws4_request` for AWS. Tells GCP how to interpret the token bytes. |
+| `subject_token` | The actual credential — a JWT (github) or a signed `GetCallerIdentity` request (aws). |
+
+The caller is *explicit* about which provider and which credential type. GCP doesn't sniff. If `audience` doesn't resolve to a real provider, or `subject_token_type` doesn't match the provider's stored type, the request is rejected before any cryptographic check.
+
+### How OIDC (GitHub) is validated
+
+GCP holds: the configured `issuer_uri` (e.g. `https://token.actions.githubusercontent.com`) and the allowed audiences.
+
+1. Fetch GitHub's public keys via `<issuer_uri>/.well-known/openid-configuration` → `jwks_uri`. GCP fetches these *directly* from GitHub over HTTPS; the caller doesn't supply them. Results are cached briefly.
+2. Verify the JWT signature against the matching public key. Only GitHub holds the private key, so only GitHub can produce JWTs that verify.
+3. Check `iss == issuer_uri`, `aud` is allowed, `exp` is in the future, `nbf` is in the past.
+
+The trust root: "GitHub's public keys are who they say they are." GCP knows because it fetched them over TLS from the well-known endpoint — the same trust mechanism your browser uses for `github.com`.
+
+### How AWS is validated
+
+GCP holds: the configured `aws_account_id`.
+
+1. Take the signed `GetCallerIdentity` blob the caller supplied and forward it to AWS STS. **GCP doesn't validate the SigV4 signature itself — it asks AWS to do that.**
+2. AWS validates the signature against the credentials it issued for the calling session and returns either an ARN + account ID (valid) or a 403 (invalid).
+3. GCP checks the returned account ID equals the provider's configured `aws_account_id`. If they don't match, reject — even though AWS said the signature was valid.
+
+The trust root: "AWS STS at `sts.<region>.amazonaws.com` is really AWS." Same TLS-over-public-DNS guarantee.
+
+### Why this is hard to spoof
+
+- **The audience pins the provider.** A caller can't trick GCP into using a different validation strategy than the provider was configured for.
+- **Signing material comes from the upstream, not the caller.** GCP fetches GitHub's JWKS itself; AWS validation goes to AWS itself.
+- **Wrong-type tokens are rejected at type-check.** A JWT sent to an AWS-typed provider, or vice versa, fails before any crypto.
+- **Replay is short-circuited.** GitHub JWTs are short-lived (minutes) and audience-bound; SigV4 signatures carry a timestamp AWS validates within ~15 min skew.
+
+### What this means for setup
+
+The upstream system (GitHub, AWS) doesn't need to know about GCP at all. GitHub mints JWTs unconditionally; AWS STS validates signatures unconditionally. All the configuration — issuer URI, account ID, conditions, mappings, bindings — lives on the GCP side. That's why you only ever configure WIF "one side of the bridge."
+
+### But the JWT contains a GCP-specific audience — where does that come from?
+
+Not from GitHub. The `google-github-actions/auth@v2` action is the bridge — it's the only thing in the GitHub-side chain that knows the workflow is going to talk to GCP. The action:
+
+1. Reads `workload_identity_provider` from the workflow YAML.
+2. Builds the audience string (`//iam.googleapis.com/<provider resource path>`).
+3. Calls GitHub's OIDC endpoint requesting a JWT with that audience.
+4. GitHub stamps the audience into the JWT's `aud` claim, signs it, hands it back.
+5. The action POSTs the JWT to GCP STS, passing the *same* audience again so GCP knows which provider to look up.
+6. Optionally calls `iamcredentials.googleapis.com` to impersonate the SA.
+7. Exposes the resulting access token to subsequent workflow steps.
+
+GitHub doesn't validate the audience, doesn't talk to GCP, doesn't pre-register relying parties. It treats the audience as an opaque string.
+
+> **The postal analogy.** GitHub is the post office. The action writes the recipient's address on the envelope (`audience = <gcp provider URI>`). The post office stamps the envelope as authentic — signs the JWT — without inspecting what's inside or knowing who lives at the address. GCP opens the envelope, sees its own address on the outside, and confirms "yes, this was addressed to me, by an authentic post office." The post office doesn't keep a list of approved addresses; it just signs whatever the sender writes.
+
+**The audience appears twice in the flow** — once when requesting the JWT (so GitHub stamps it in), and again in the STS exchange request to GCP (so GCP knows which provider to use). Both must match for the audience check to pass. The action handles both sides; you set the audience exactly once via the workflow YAML.
+
+### The AWS-side equivalent
+
+There's no `google-github-actions/auth@v2` for AWS, but the role exists — the **Google auth libraries** (`google-auth` for Python, `google-auth-library` for Node, etc.) play the same choreographer role inside the running container:
+
+1. Read the `external_account` JSON from `GOOGLE_APPLICATION_CREDENTIALS`. This file is the only place that knows both sides — the GCP audience (provider URI) and the runtime AWS metadata endpoints.
+2. Fetch the task role's AWS credentials from ECS metadata.
+3. Build a SigV4-signed `GetCallerIdentity` request blob.
+4. POST it to GCP STS along with the audience from the JSON.
+5. Impersonate the SA via iamcredentials.
+6. Cache the resulting access token and re-run when it expires.
+
+AWS itself remains incurious — it just validates SigV4 signatures and reports who the caller is, with no idea that GCP is the consumer.
+
+So: in both flows, there's a **piece of middleware that knows both sides** (the action on GitHub, the auth library on AWS). The upstream identity providers themselves stay blind. That's what makes the configuration one-sided — you set everything up on GCP, and the bridge software handles the cross-cloud plumbing at runtime.
 
 ## Common failure modes
 
