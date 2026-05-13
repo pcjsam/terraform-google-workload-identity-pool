@@ -50,6 +50,18 @@ output "principal_set_all" {
   value       = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.pool.name}/*"
 }
 
+output "principal_set_aws_account" {
+  description = "Principal set for the AWS account attribute (use in IAM bindings). Null when provider_type is not 'aws' or aws_account_id is unset"
+  value       = local.is_aws && var.aws_account_id != null ? "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.pool.name}/attribute.account/${var.aws_account_id}" : null
+}
+
+output "principal_set_aws_roles" {
+  description = "Map of AWS role ARN to principal set for use in IAM bindings"
+  value = {
+    for role_arn in var.allowed_aws_role_arns : role_arn => "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.pool.name}/attribute.aws_role/${role_arn}"
+  }
+}
+
 output "attribute_condition" {
   description = "The computed attribute condition applied to the provider"
   value       = local.computed_attribute_condition
