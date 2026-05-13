@@ -5,6 +5,8 @@ This Terraform module creates a Google Cloud Workload Identity Pool and Provider
 - **`github`** (default) — GitHub Actions OIDC
 - **`aws`** — AWS account federation, e.g. ECS/EKS task roles or EC2 instance profiles calling Google APIs without a long-lived service account key
 
+For a deeper walk-through of what actually happens on the wire at runtime — JWT verification (GitHub) vs signed-STS verification (AWS), where conditions and bindings are checked, common failure modes — see [`docs/federation-flow.md`](./docs/federation-flow.md).
+
 ## Features
 
 - Configurable workload identity pool and provider (GitHub OIDC or AWS account federation)
