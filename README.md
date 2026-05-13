@@ -203,7 +203,7 @@ In the pipeline it sits between `attribute_mapping` (which exposes claims as att
 **1. Via helper variables** (recommended for common cases). The module composes the CEL for you when you set any of:
 
 - GitHub: `allowed_repository_owner`, `allowed_repositories`, `allowed_refs`, `allowed_environments`, `allowed_workflows`
-- AWS: `allowed_aws_account_ids`, `allowed_aws_role_arns`
+- AWS: `allowed_aws_role_arns` (account-level trust is already enforced by `aws_account_id` at the provider level)
 
 Each helper produces a CEL fragment, and the fragments are AND'd together. Setting `allowed_repositories = ["my-org/my-repo"]` and `allowed_refs = ["refs/heads/main"]` produces:
 
@@ -418,7 +418,6 @@ See [Attribute Condition → Common patterns](#common-patterns) for ready-to-pas
 | allowed_environments | List of allowed environments | `list(string)` | `[]` | no |
 | allowed_workflows | List of allowed workflow files | `list(string)` | `[]` | no |
 | aws_account_id | AWS account the provider trusts. Required when `provider_type = "aws"` | `string` | `null` | conditional |
-| allowed_aws_account_ids | List of allowed AWS account IDs | `list(string)` | `[]` | no |
 | allowed_aws_role_arns | List of allowed assumed-role ARN prefixes (matched via `startsWith`) | `list(string)` | `[]` | no |
 | service_accounts | Service accounts to bind. See [Service Accounts](#service-accounts) | `list(object)` | `[]` | no |
 

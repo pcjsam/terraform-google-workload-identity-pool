@@ -77,12 +77,6 @@ variable "aws_account_id" {
   default     = null
 }
 
-variable "allowed_aws_account_ids" {
-  type        = list(string)
-  description = "List of allowed AWS account IDs. Used to scope access when the provider trusts a higher-level identity boundary. If empty, no account-level filter is applied"
-  default     = []
-}
-
 variable "allowed_aws_role_arns" {
   type        = list(string)
   description = "List of allowed assumed-role ARN prefixes (e.g., 'arn:aws:sts::123456789012:assumed-role/my-task-role'). Each entry is OR'd via assertion.arn.startsWith(...)"

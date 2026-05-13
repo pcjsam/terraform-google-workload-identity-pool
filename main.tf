@@ -28,12 +28,6 @@ locals {
     : "assertion.workflow in [${join(", ", [for w in var.allowed_workflows : "'${w}'"])}]"
   ) : null
 
-  aws_accounts_condition = local.is_aws && length(var.allowed_aws_account_ids) > 0 ? (
-    length(var.allowed_aws_account_ids) == 1
-    ? "assertion.account == '${var.allowed_aws_account_ids[0]}'"
-    : "assertion.account in [${join(", ", [for a in var.allowed_aws_account_ids : "'${a}'"])}]"
-  ) : null
-
   aws_roles_condition = local.is_aws && length(var.allowed_aws_role_arns) > 0 ? (
     length(var.allowed_aws_role_arns) == 1
     ? "assertion.arn.startsWith('${var.allowed_aws_role_arns[0]}')"
@@ -46,7 +40,6 @@ locals {
     local.refs_condition,
     local.envs_condition,
     local.workflows_condition,
-    local.aws_accounts_condition,
     local.aws_roles_condition,
   ])
 
