@@ -90,9 +90,35 @@ variable "allowed_aws_role_arns" {
 }
 
 variable "attribute_condition" {
-  type        = string
-  description = "Custom CEL expression for attribute condition. If set, this overrides all other condition variables"
-  default     = null
+  type = string
+  description = <<-EOT
+    CEL expression evaluated by GCP at token exchange time. Returns false -> exchange rejected
+    before any principalSet binding is consulted. Returns true -> request proceeds to the
+    per-SA binding check.
+
+    This sits between attribute_mapping (which exposes claims as attributes) and service_accounts
+    (which decides which SAs the caller may impersonate). Conditions can express things bindings
+    cannot: OR logic, negations, prefix matching, cross-attribute checks.
+
+    If null, the module composes a condition from the helper variables (allowed_repositories,
+    allowed_refs, allowed_aws_role_arns, etc.) by AND'ing their CEL fragments. If non-null,
+    this string is used verbatim and the helpers are ignored.
+
+    Set this directly when you need:
+      - OR across attributes:        assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v')
+      - Negation:                    assertion.actor != 'dependabot[bot]'
+      - Prefix matching (AWS roles): assertion.arn.startsWith('arn:aws:sts::123:assumed-role/my-role/')
+      - Cross-attribute logic:       (assertion.environment == 'production' && assertion.ref == 'refs/heads/main') || assertion.environment == 'staging'
+      - Claims not exposed by the default attribute_mapping (e.g. assertion.runner_environment).
+
+    Example:
+      attribute_condition = <<-COND
+        assertion.repository_owner == 'my-org' &&
+        (assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v')) &&
+        assertion.actor != 'dependabot[bot]'
+      COND
+  EOT
+  default = null
 }
 
 variable "attribute_mapping" {

@@ -192,6 +192,87 @@ attribute_mapping = {
 
 When you override, you replace the whole map — the module does not merge with the default. If you still want the default keys, copy them in.
 
+## Attribute Condition
+
+`attribute_condition` is a [CEL](https://github.com/google/cel-spec) expression GCP evaluates against the upstream token's claims at exchange time. If it returns `false`, the exchange is rejected *before* any `principalSet` binding is consulted. If it returns `true`, the request proceeds to the binding check.
+
+In the pipeline it sits between `attribute_mapping` (which exposes claims as attributes) and `service_accounts` (which decides which SAs the caller may impersonate). It's the coarse pre-filter; the binding is the precise gate. They're complementary because conditions can express things bindings can't — OR logic, negations, prefix matching, cross-attribute checks.
+
+### Two ways to set it
+
+**1. Via helper variables** (recommended for common cases). The module composes the CEL for you when you set any of:
+
+- GitHub: `allowed_repository_owner`, `allowed_repositories`, `allowed_refs`, `allowed_environments`, `allowed_workflows`
+- AWS: `allowed_aws_account_ids`, `allowed_aws_role_arns`
+
+Each helper produces a CEL fragment, and the fragments are AND'd together. Setting `allowed_repositories = ["my-org/my-repo"]` and `allowed_refs = ["refs/heads/main"]` produces:
+
+```cel
+assertion.repository == 'my-org/my-repo' && assertion.ref == 'refs/heads/main'
+```
+
+**2. Via `attribute_condition` directly** (the escape hatch). If non-null, the helper variables are silently ignored and your string is used verbatim. Reach for this when you need:
+
+- **OR across attributes** — `assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v')`
+- **Negation** — `assertion.actor != 'dependabot[bot]'`
+- **Prefix matching** — `assertion.arn.startsWith('arn:aws:sts::123:assumed-role/my-role/')`
+- **Cross-attribute logic** — `(assertion.environment == 'production' && assertion.ref == 'refs/heads/main') || assertion.environment == 'staging'`
+- **Claims not exposed by the default `attribute_mapping`** — e.g. GitHub's `runner_environment` or `job_workflow_ref` (set both `attribute_mapping` to include them and `attribute_condition` to reference them).
+
+### Useful CEL operators
+
+| Operator | Example |
+|---|---|
+| `==`, `!=` | `assertion.repository == 'my-org/my-repo'` |
+| `&&`, <code>&#124;&#124;</code> | `assertion.ref == 'refs/heads/main' && assertion.workflow == '.github/workflows/deploy.yml'` |
+| `in [...]` | `assertion.environment in ['production', 'staging']` |
+| `startsWith` / `contains` | `assertion.ref.startsWith('refs/tags/v')`, `assertion.arn.contains('assumed-role')` |
+| `extract` (with `{name}` placeholder) | `assertion.arn.extract('assumed-role/{role_name}/')` |
+| String concat | `'prefix-' + assertion.repository_owner` |
+
+### Common patterns
+
+| Scenario | Condition |
+|---|---|
+| GitHub org only | `assertion.repository_owner == 'my-org'` |
+| One repo | `assertion.repository == 'my-org/my-repo'` |
+| Main branch only | `assertion.ref == 'refs/heads/main'` |
+| Release tags | `assertion.ref.startsWith('refs/tags/v')` |
+| Production env | `assertion.environment == 'production'` |
+| Specific workflow | `assertion.workflow == '.github/workflows/deploy.yml'` |
+| Exclude bot | `assertion.actor != 'dependabot[bot]'` |
+| AWS account scope | `assertion.account == '123456789012'` |
+| AWS role (any session) | `assertion.arn.startsWith('arn:aws:sts::123456789012:assumed-role/my-role/')` |
+| `main` OR release tag | `assertion.ref == 'refs/heads/main' \|\| assertion.ref.startsWith('refs/tags/v')` |
+
+### Worked example
+
+```hcl
+attribute_mapping = {
+  "google.subject"       = "assertion.sub"
+  "attribute.repository" = "assertion.repository"
+  "attribute.ref"        = "assertion.ref"
+}
+
+attribute_condition = "assertion.repository_owner == 'my-org' && assertion.ref == 'refs/heads/main'"
+
+service_accounts = [
+  {
+    service_account_email = "deployer@my-proj.iam.gserviceaccount.com"
+    attribute             = "repository"
+    attribute_value       = "my-org/my-repo"
+  },
+]
+```
+
+- A workflow on `my-org/my-repo` running on `main` → condition passes (org + ref both match) → binding for `my-org/my-repo` matches → impersonation allowed.
+- A workflow on `my-org/different-repo` on `main` → condition still passes → binding for `my-org/my-repo` does **not** match → impersonation rejected.
+- A workflow on `my-org/my-repo` on `feature-branch` → condition fails (ref doesn't match) → exchange rejected before the binding is even checked.
+
+The condition is the door; the binding decides which room you're allowed in once you're inside.
+
+See [`examples/custom-condition`](./examples/custom-condition) for a fuller GitHub example combining OR logic and negation.
+
 ## Service Accounts
 
 Each entry in `service_accounts` creates a `roles/iam.workloadIdentityUser` binding on the named GCP service account, allowing any federated principal whose mapped attribute matches the supplied value to impersonate that SA. Where `attribute_condition` is a coarse pre-filter that decides whether the token exchange is allowed *at all*, this list is the precise gate that says *which SAs* a given identity can become.
@@ -305,17 +386,7 @@ Store the `workload_identity_provider` output as a GitHub secret.
 4. **Limit workflow access** to specific workflow files
 5. **Avoid wildcard principal sets** in service account bindings
 
-### Attribute Condition Examples
-
-| Scenario | Condition |
-|----------|-----------|
-| Org only | `assertion.repository_owner == 'my-org'` |
-| Single repo | `assertion.repository == 'my-org/my-repo'` |
-| Main branch | `assertion.ref == 'refs/heads/main'` |
-| Release tags | `assertion.ref.startsWith('refs/tags/v')` |
-| Production env | `assertion.environment == 'production'` |
-| Specific workflow | `assertion.workflow == '.github/workflows/deploy.yml'` |
-| Exclude bot | `assertion.actor != 'dependabot[bot]'` |
+See [Attribute Condition → Common patterns](#common-patterns) for ready-to-paste CEL snippets for each of these practices.
 
 ## Requirements
 
@@ -340,7 +411,7 @@ Store the `workload_identity_provider` output as a GitHub secret.
 | provider_disabled | Whether the provider is disabled | `bool` | `false` | no |
 | issuer_uri | The OIDC issuer URI (github only) | `string` | `"https://token.actions.githubusercontent.com"` | no |
 | attribute_mapping | Upstream claim → Google attribute translation. See [Attribute Mapping](#attribute-mapping). If null, a default is chosen from `provider_type` | `map(string)` | `null` | no |
-| attribute_condition | Custom CEL expression | `string` | `null` | no |
+| attribute_condition | CEL expression gating token exchange. See [Attribute Condition](#attribute-condition). If null, composed from `allowed_*` helpers | `string` | `null` | no |
 | allowed_repository_owner | GitHub org/user owner | `string` | `null` | no |
 | allowed_repositories | List of allowed repos | `list(string)` | `[]` | no |
 | allowed_refs | List of allowed git refs | `list(string)` | `[]` | no |

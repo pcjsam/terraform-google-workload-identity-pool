@@ -1,5 +1,12 @@
 # Custom Condition Example
-# Uses a custom CEL expression for advanced filtering
+# Demonstrates attribute_condition as the escape hatch when the helper variables
+# (allowed_repositories, allowed_refs, ...) can't express what you need.
+#
+# This condition combines:
+#   - AND across attributes (org + workflow)
+#   - OR within the ref check (main branch OR a v-prefixed release tag)
+#   - Negation (exclude dependabot[bot])
+# The OR and the negation are why the helper variables alone aren't enough.
 
 module "github_oidc" {
   source = "../../"
@@ -9,9 +16,7 @@ module "github_oidc" {
   pool_display_name = "GitHub Custom Pool"
   pool_description  = "Workload identity pool with custom attribute condition"
 
-  # Custom CEL expression for complex conditions
-  # This example: only allow from specific org, on main branch or release tags,
-  # and only from specific workflow
+  # Verbatim CEL. Setting this disables the allowed_* helper variables.
   attribute_condition = <<-EOT
     assertion.repository_owner == '${var.github_org}' &&
     (assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v')) &&
@@ -19,7 +24,9 @@ module "github_oidc" {
     assertion.actor != 'dependabot[bot]'
   EOT
 
-  # Custom attribute mapping to include additional claims
+  # Override the default mapping to expose claims the defaults don't (job_workflow_ref,
+  # run_id, run_attempt). Setting attribute_mapping replaces the whole map, so the github
+  # defaults are copied in alongside the new keys.
   attribute_mapping = {
     "google.subject"             = "assertion.sub"
     "attribute.actor"            = "assertion.actor"
