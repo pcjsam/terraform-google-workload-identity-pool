@@ -90,7 +90,7 @@ variable "allowed_aws_role_arns" {
 }
 
 variable "attribute_condition" {
-  type = string
+  type        = string
   description = <<-EOT
     CEL expression evaluated by GCP at token exchange time. Returns false -> exchange rejected
     before any principalSet binding is consulted. Returns true -> request proceeds to the
@@ -118,7 +118,7 @@ variable "attribute_condition" {
         assertion.actor != 'dependabot[bot]'
       COND
   EOT
-  default = null
+  default     = null
 }
 
 variable "attribute_mapping" {
