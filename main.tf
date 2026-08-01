@@ -1,3 +1,7 @@
+############################################
+# Data Sources & Local Variables
+############################################
+
 locals {
   is_github = var.provider_type == "github"
   is_aws    = var.provider_type == "aws"
@@ -78,6 +82,10 @@ data "google_project" "project" {
   project_id = var.project_id
 }
 
+############################################
+# Workload Identity Pool
+############################################
+
 resource "google_iam_workload_identity_pool" "pool" {
   project                   = var.project_id
   workload_identity_pool_id = var.pool_id
@@ -85,6 +93,10 @@ resource "google_iam_workload_identity_pool" "pool" {
   description               = var.pool_description
   disabled                  = var.pool_disabled
 }
+
+############################################
+# Workload Identity Pool Provider
+############################################
 
 resource "google_iam_workload_identity_pool_provider" "provider" {
   project                            = var.project_id
@@ -117,6 +129,10 @@ resource "google_iam_workload_identity_pool_provider" "provider" {
     }
   }
 }
+
+############################################
+# Service Account IAM Bindings
+############################################
 
 resource "google_service_account_iam_member" "workload_identity_user" {
   for_each = {

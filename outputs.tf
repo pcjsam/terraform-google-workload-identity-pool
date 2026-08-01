@@ -1,3 +1,7 @@
+############################################
+# Pool
+############################################
+
 output "pool_id" {
   description = "The ID of the workload identity pool"
   value       = google_iam_workload_identity_pool.pool.workload_identity_pool_id
@@ -12,6 +16,10 @@ output "pool_state" {
   description = "The state of the workload identity pool"
   value       = google_iam_workload_identity_pool.pool.state
 }
+
+############################################
+# Provider
+############################################
 
 output "provider_id" {
   description = "The ID of the workload identity pool provider"
@@ -32,6 +40,10 @@ output "workload_identity_provider" {
   description = "The workload identity provider resource path for use in GitHub Actions auth"
   value       = "projects/${local.project_number}/locations/global/workloadIdentityPools/${google_iam_workload_identity_pool.pool.workload_identity_pool_id}/providers/${google_iam_workload_identity_pool_provider.provider.workload_identity_pool_provider_id}"
 }
+
+############################################
+# Principal Sets
+############################################
 
 output "principal_set_repository_owner" {
   description = "Principal set for repository owner attribute (use in IAM bindings)"
@@ -61,6 +73,10 @@ output "principal_set_aws_roles" {
     for role_arn in var.allowed_aws_role_arns : role_arn => "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.pool.name}/attribute.aws_role/${role_arn}"
   }
 }
+
+############################################
+# Computed Condition & Bindings
+############################################
 
 output "attribute_condition" {
   description = "The computed attribute condition applied to the provider"

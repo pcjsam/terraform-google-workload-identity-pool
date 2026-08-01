@@ -1,7 +1,46 @@
+############################################
+# General
+############################################
+
 variable "project_id" {
   type        = string
   description = "The GCP project ID where the workload identity pool will be created"
 }
+
+############################################
+# Pool
+############################################
+
+variable "pool_id" {
+  type        = string
+  description = "The ID of the workload identity pool. Must be 4-32 characters, lowercase letters, digits, and hyphens only"
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{3,31}$", var.pool_id))
+    error_message = "Pool ID must be 4-32 characters, start with a letter, and contain only lowercase letters, digits, and hyphens"
+  }
+}
+
+variable "pool_display_name" {
+  type        = string
+  description = "Display name for the workload identity pool"
+  default     = null
+}
+
+variable "pool_description" {
+  type        = string
+  description = "Description for the workload identity pool"
+  default     = null
+}
+
+variable "pool_disabled" {
+  type        = bool
+  description = "Whether the workload identity pool is disabled"
+  default     = false
+}
+
+############################################
+# Provider
+############################################
 
 variable "provider_type" {
   type        = string
@@ -41,6 +80,22 @@ variable "provider_disabled" {
   default     = false
 }
 
+variable "issuer_uri" {
+  type        = string
+  description = "The OIDC issuer URI. Only used when provider_type is 'github'. Defaults to GitHub Actions token endpoint"
+  default     = "https://token.actions.githubusercontent.com"
+}
+
+variable "aws_account_id" {
+  type        = string
+  description = "AWS account ID that the workload identity provider will trust. Required when provider_type is 'aws'"
+  default     = null
+}
+
+############################################
+# Attribute Condition Helpers
+############################################
+
 variable "allowed_repository_owner" {
   type        = string
   description = "GitHub organization or user that owns the repositories. Required if attribute_condition is not set"
@@ -71,16 +126,42 @@ variable "allowed_workflows" {
   default     = []
 }
 
-variable "aws_account_id" {
-  type        = string
-  description = "AWS account ID that the workload identity provider will trust. Required when provider_type is 'aws'"
-  default     = null
-}
-
 variable "allowed_aws_role_arns" {
   type        = list(string)
   description = "List of allowed assumed-role ARN prefixes (e.g., 'arn:aws:sts::123456789012:assumed-role/my-task-role'). Each entry is OR'd via assertion.arn.startsWith(...)"
   default     = []
+}
+
+############################################
+# Attribute Mapping & Condition
+############################################
+
+variable "attribute_mapping" {
+  type        = map(string)
+  description = <<-EOT
+    Translates claims from the upstream token into Google-side attributes that can be referenced
+    in attribute_condition (CEL filtering) and principalSet members (IAM bindings). Keys must be
+    either 'google.subject' (the unique principal identifier, required) or 'attribute.<name>'
+    (custom attributes); values are CEL expressions over the upstream assertion. If null, a
+    default is chosen from provider_type:
+
+    - github: maps assertion.sub -> google.subject, plus assertion.repository, repository_owner,
+      ref, ref_type, actor, workflow, environment as attribute.<name>. This is what lets you
+      bind 'principalSet://.../attribute.repository/my-org/my-repo'.
+
+    - aws: maps assertion.arn -> google.subject, assertion.account -> attribute.account, and
+      derives a canonical attribute.aws_role from the assumed-role ARN (stripping the session-
+      name suffix). This is what lets you bind
+      'principalSet://.../attribute.aws_role/arn:aws:sts::<acct>:assumed-role/<role>'.
+
+    Override only when you need an attribute the default doesn't expose. Example:
+      attribute_mapping = {
+        "google.subject"       = "assertion.sub"
+        "attribute.repository" = "assertion.repository"
+        "attribute.team"       = "assertion.repository.split('/')[0]"
+      }
+  EOT
+  default     = null
 }
 
 variable "attribute_condition" {
@@ -115,66 +196,9 @@ variable "attribute_condition" {
   default     = null
 }
 
-variable "attribute_mapping" {
-  type        = map(string)
-  description = <<-EOT
-    Translates claims from the upstream token into Google-side attributes that can be referenced
-    in attribute_condition (CEL filtering) and principalSet members (IAM bindings). Keys must be
-    either 'google.subject' (the unique principal identifier, required) or 'attribute.<name>'
-    (custom attributes); values are CEL expressions over the upstream assertion. If null, a
-    default is chosen from provider_type:
-
-    - github: maps assertion.sub -> google.subject, plus assertion.repository, repository_owner,
-      ref, ref_type, actor, workflow, environment as attribute.<name>. This is what lets you
-      bind 'principalSet://.../attribute.repository/my-org/my-repo'.
-
-    - aws: maps assertion.arn -> google.subject, assertion.account -> attribute.account, and
-      derives a canonical attribute.aws_role from the assumed-role ARN (stripping the session-
-      name suffix). This is what lets you bind
-      'principalSet://.../attribute.aws_role/arn:aws:sts::<acct>:assumed-role/<role>'.
-
-    Override only when you need an attribute the default doesn't expose. Example:
-      attribute_mapping = {
-        "google.subject"       = "assertion.sub"
-        "attribute.repository" = "assertion.repository"
-        "attribute.team"       = "assertion.repository.split('/')[0]"
-      }
-  EOT
-  default     = null
-}
-
-variable "pool_id" {
-  type        = string
-  description = "The ID of the workload identity pool. Must be 4-32 characters, lowercase letters, digits, and hyphens only"
-  validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{3,31}$", var.pool_id))
-    error_message = "Pool ID must be 4-32 characters, start with a letter, and contain only lowercase letters, digits, and hyphens"
-  }
-}
-
-variable "pool_display_name" {
-  type        = string
-  description = "Display name for the workload identity pool"
-  default     = null
-}
-
-variable "pool_description" {
-  type        = string
-  description = "Description for the workload identity pool"
-  default     = null
-}
-
-variable "pool_disabled" {
-  type        = bool
-  description = "Whether the workload identity pool is disabled"
-  default     = false
-}
-
-variable "issuer_uri" {
-  type        = string
-  description = "The OIDC issuer URI. Only used when provider_type is 'github'. Defaults to GitHub Actions token endpoint"
-  default     = "https://token.actions.githubusercontent.com"
-}
+############################################
+# Service Account Bindings
+############################################
 
 variable "service_accounts" {
   type = list(object({
@@ -236,3 +260,4 @@ variable "service_accounts" {
   EOT
   default     = []
 }
+
